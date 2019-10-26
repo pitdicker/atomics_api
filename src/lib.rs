@@ -5,23 +5,26 @@ pub struct AtomicUsize(atomic::AtomicUsize);
 pub mod compare;
 use compare::{NeedsCompareOrdering, NeedsCompareAcqOp, CompareExchange};
 
-impl AtomicUsize { // Relaxed
+impl AtomicUsize {
     /// Creates a new atomic integer.
     #[inline]
     pub const fn new(val: usize) -> AtomicUsize {
         AtomicUsize(atomic::AtomicUsize::new(val))
     }
 
-    /// Consumes the atomic and returns the contained value.
+    /// Returns a mutable reference to the underlying integer.
     ///
-    /// This is safe because passing `self` by value guarantees that no other threads are
+    /// This is safe because the mutable reference guarantees that no other threads are
     /// concurrently accessing the atomic data.
     #[inline]
     pub fn get_mut(&mut self) -> &mut usize {
         self.0.get_mut()
     }
 
-    /// Loads a value from the atomic integer.
+    /// Consumes the atomic and returns the contained value.
+    ///
+    /// This is safe because passing `self` by value guarantees that no other threads are
+    /// concurrently accessing the atomic data.
     #[inline]
     pub fn into_inner(self) -> usize {
         self.0.into_inner()
@@ -34,6 +37,8 @@ impl AtomicUsize { // Relaxed
     /// Intended to be used with one of the operations that do a store (📥) in ‘method chaining’:
     /// [`store`], [`swap`], or one of the [`fetch_*`] methods.
     ///
+    /// FIXME: mention [`sequential_consistency`]
+    ///
     /// # Examples
     /// ```
     /// let atomic = AtomicUsize::new(42);
@@ -41,9 +46,10 @@ impl AtomicUsize { // Relaxed
     /// ```
     ///
     /// [`acquire`]: AtomicUsize::acquire
-    /// [`store`]: NeedsStore::store
-    /// [`swap`]: NeedsStore::swap
-    /// [`fetch_*`]: NeedsStore::fetch_add
+    /// [`store`]: AtomicUsize::store
+    /// [`swap`]: AtomicUsize::swap
+    /// [`fetch_*`]: AtomicUsize::fetch_add
+    /// [`sequential_consistency`]: NeedsStore::sequential_consistency
     #[must_use]
     #[inline]
     pub fn release(&self) -> NeedsStore {
@@ -62,6 +68,8 @@ impl AtomicUsize { // Relaxed
     /// Can also be combined with [`compare`] to always do an acquire, and conditionally do some
     /// other operations.
     ///
+    /// FIXME: mention [`sequential_consistency`]
+    ///
     /// # Examples
     /// ```
     /// let atomic = AtomicUsize::new(42);
@@ -69,10 +77,11 @@ impl AtomicUsize { // Relaxed
     /// ```
     ///
     /// [`release`]: AtomicUsize::release
-    /// [`load`]: NeedsLoad::load
-    /// [`swap`]: NeedsLoad::swap
-    /// [`fetch_*`]: NeedsLoad::fetch_add
+    /// [`load`]: AtomicUsize::load
+    /// [`swap`]: AtomicUsize::swap
+    /// [`fetch_*`]: AtomicUsize::fetch_add
     /// [`compare`]: NeedsLoad::compare
+    /// [`sequential_consistency`]: NeedsLoad::sequential_consistency
     #[must_use]
     #[inline]
     pub fn acquire(&self) -> NeedsLoad {
@@ -94,8 +103,8 @@ impl AtomicUsize { // Relaxed
     /// let value = atomic.acquire_and_release().swap();
     /// ```
     ///
-    /// [`swap`]: NeedsRmw::swap
-    /// [`fetch_*`]: NeedsRmw::fetch_add
+    /// [`swap`]: AtomicUsize::swap
+    /// [`fetch_*`]: AtomicUsize::fetch_add
     #[must_use]
     #[inline]
     pub fn acquire_and_release(&self) -> NeedsRmw {
@@ -105,13 +114,13 @@ impl AtomicUsize { // Relaxed
         }
     }
 
-    /// Compare the atomic integer to a value, and take some action if successful.
+    /// 📤 📥 Compare the atomic integer to a value, and take some action if successful.
     ///
-    /// Every use of `compare` can be followed by multiple options, but must be always finish with
-    /// [`swap`] or [`store`].
+    /// Every use of [`compare`] can be followed by multiple options, but must be always finish with
+    /// [`swap`].
     ///
-    /// `compare` uses the builder pattern to set up an `compare_exchange` with the right flags, and
-    /// uses the type system to prevent invalid combinations (this makes the API documentation
+    /// [`compare`] uses the builder pattern to set up a `compare_exchange` with the right flags,
+    /// and uses the type system to prevent invalid combinations (this makes the API documentation
     /// harder to navigate though).
     ///
     /// The final return value of the builder is `Result<usize, usize>`: a result indicating whether
@@ -120,16 +129,19 @@ impl AtomicUsize { // Relaxed
     ///
     /// # Possible invocations
     ///
-    /// - [`swap`]: Stores a value into the atomic integer, returning the previous value.
-    ///   Must always be present as the final method.
-    /// - [`weak`]: Use a weak comparison, that may spuriously fail even when the comparison
-    ///   succeeds. TODO. Must be the first option after `compare`.
-    /// - One of the release/acquire orderings: [`acquire`], [`release`], or
-    ///   [`acquire_and_release`].
+    /// - The first method that can be called after [`compare`] is [`weak`]. This allows the
+    ///   compare-and-exchange to spuriously fail even when the comparison succeeds. This will yield
+    ///   better performance on some platforms. If you already use [`compare`] in a loop, it is good
+    ///   to use [`weak`].
+    ///
+    /// - Next you can supply release/acquire orderings, if you want to enforce any: [`acquire`],
+    ///   [`release`], or [`acquire_and_release`].
+    ///
     /// - In vary rare cases you may want to combine [`acquire`] or [`release`] with
     ///   [`sequential_consistency`].
     ///
-    /// Note: the order of invocation matters.
+    /// - Finish with [`swap`], which stores a value into the atomic integer, returning the previous
+    ///   value.
     ///
     /// ```text
     /// atomic.compare(current).swap(new);
@@ -212,9 +224,9 @@ impl AtomicUsize { // Relaxed
         self.0.store(val, Ordering::Relaxed)
     }
 
-    /// 📤 Stores a value into the atomic integer.
+    /// 📥 Stores the value of `val` into the atomic integer.
     ///
-    /// 📥 Returns the previous value.
+    /// 📤 Returns the previous value.
     ///
     /// # Examples
     /// ```
@@ -230,7 +242,9 @@ impl AtomicUsize { // Relaxed
         self.0.swap(val, Ordering::Relaxed)
     }
 
-    /// 📤 📥 Adds to the current value, returning the previous value.
+    /// 📥 Adds `val` to the current value, wrapping around on overflow.
+    ///
+    /// 📤 Returns the previous value.
     ///
     /// This operation wraps around on overflow.
     ///
@@ -247,9 +261,9 @@ impl AtomicUsize { // Relaxed
         self.0.fetch_add(val, Ordering::Relaxed)
     }
 
-    /// 📤 📥 Subtracts from the current value, returning the previous value.
+    /// 📥 Subtracts `val` from the current value, wrapping around on overflow.
     ///
-    /// This operation wraps around on overflow.
+    /// 📤 Returns the previous value.
     ///
     /// # Examples
     /// ```
@@ -264,12 +278,9 @@ impl AtomicUsize { // Relaxed
         self.0.fetch_sub(val, Ordering::Relaxed)
     }
 
-    /// 📤 📥 Bitwise "and" with the current value.
+    /// 📥 Performs a bitwise "and" with `val` on the current value.
     ///
-    /// Performs a bitwise "and" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
+    /// 📤 Returns the previous value.
     ///
     /// # Examples
     /// ```
@@ -284,12 +295,9 @@ impl AtomicUsize { // Relaxed
         self.0.fetch_and(val, Ordering::Relaxed)
     }
 
-    /// 📤 📥 Bitwise "nand" with the current value.
+    /// 📥 Performs a bitwise "nand" with `val` on the current value.
     ///
-    /// Performs a bitwise "nand" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
+    /// 📤 Returns the previous value.
     ///
     /// # Examples
     /// ```
@@ -304,12 +312,9 @@ impl AtomicUsize { // Relaxed
         self.0.fetch_nand(val, Ordering::Relaxed)
     }
 
-    /// 📤 📥 Bitwise "or" with the current value.
+    /// 📥 Performs a bitwise "or" with `val` on the current value.
     ///
-    /// Performs a bitwise "or" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
+    /// 📤 Returns the previous value.
     ///
     /// # Examples
     /// ```
@@ -324,12 +329,9 @@ impl AtomicUsize { // Relaxed
         self.0.fetch_or(val, Ordering::Relaxed)
     }
 
-    /// 📤 📥 Bitwise "xor" with the current value.
+    /// 📥 Performs a bitwise "xor" with `val` on the current value.
     ///
-    /// Performs a bitwise "xor" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
+    /// 📤 Returns the previous value.
     ///
     /// # Examples
     /// ```
@@ -351,18 +353,8 @@ pub struct NeedsLoad<'a> {
 }
 
 impl NeedsLoad<'_> {
-    /// Stores a value into the atomic integer.
+    /// FIXME: add doc comment
     #[inline]
-    pub fn load(self) -> usize {
-        self.atomic.0.load(self.ordering)
-    }
-
-    /// Stores a value into the atomic integer, returning the previous value.
-    #[inline]
-    pub fn swap(self, val: usize) -> usize {
-        self.atomic.0.swap(val, self.ordering)
-    }
-
     pub fn compare(&self, current: usize) -> NeedsCompareAcqOp {
         NeedsCompareAcqOp(CompareExchange::new(
             self.atomic,
@@ -373,70 +365,51 @@ impl NeedsLoad<'_> {
         ))
     }
 
-    /// Adds to the current value, returning the previous value.
-    ///
-    /// This operation wraps around on overflow.
+    /// FIXME: add doc comment
+    #[inline]
+    pub fn sequential_consistency(mut self) -> Self {
+        self.ordering = Ordering::SeqCst;
+        self
+    }
+
+    #[inline]
+    pub fn load(self) -> usize {
+        self.atomic.0.load(self.ordering)
+    }
+
+    #[inline]
+    pub fn swap(self, val: usize) -> usize {
+        self.atomic.0.swap(val, self.ordering)
+    }
+
     #[inline]
     pub fn fetch_add(&self, val: usize) -> usize {
         self.atomic.0.fetch_add(val, self.ordering)
     }
 
-    /// Subtracts from the current value, returning the previous value.
-    ///
-    /// This operation wraps around on overflow.
     #[inline]
     pub fn fetch_sub(&self, val: usize) -> usize {
         self.atomic.0.fetch_sub(val, self.ordering)
     }
 
-    /// Bitwise "and" with the current value.
-    ///
-    /// Performs a bitwise "and" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_and(&self, val: usize) -> usize {
         self.atomic.0.fetch_and(val, self.ordering)
     }
 
-    /// Bitwise "nand" with the current value.
-    ///
-    /// Performs a bitwise "nand" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_nand(&self, val: usize) -> usize {
         self.atomic.0.fetch_nand(val, self.ordering)
     }
 
-    /// Bitwise "or" with the current value.
-    ///
-    /// Performs a bitwise "or" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_or(&self, val: usize) -> usize {
         self.atomic.0.fetch_or(val, self.ordering)
     }
 
-    /// Bitwise "xor" with the current value.
-    ///
-    /// Performs a bitwise "xor" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_xor(&self, val: usize) -> usize {
         self.atomic.0.fetch_xor(val, self.ordering)
-    }
-
-    #[inline]
-    pub fn sequential_consistency(mut self) -> Self {
-        self.ordering = Ordering::SeqCst;
-        self
     }
 }
 
@@ -446,82 +419,51 @@ pub struct NeedsStore<'a> {
 }
 
 impl NeedsStore<'_> {
-    /// Stores a value into the atomic integer.
+    /// FIXME: add doc comment
+    #[inline]
+    pub fn sequential_consistency(mut self) -> Self {
+        self.ordering = Ordering::SeqCst;
+        self
+    }
+
     #[inline]
     pub fn store(self, val: usize) {
         self.atomic.0.store(val, self.ordering)
     }
 
-    /// Stores a value into the atomic integer, returning the previous value.
     #[inline]
     pub fn swap(self, val: usize) -> usize {
         self.atomic.0.swap(val, self.ordering)
     }
 
-    /// Adds to the current value, returning the previous value.
-    ///
-    /// This operation wraps around on overflow.
     #[inline]
     pub fn fetch_add(&self, val: usize) -> usize {
         self.atomic.0.fetch_add(val, self.ordering)
     }
 
-    /// Subtracts from the current value, returning the previous value.
-    ///
-    /// This operation wraps around on overflow.
     #[inline]
     pub fn fetch_sub(&self, val: usize) -> usize {
         self.atomic.0.fetch_sub(val, self.ordering)
     }
 
-    /// Bitwise "and" with the current value.
-    ///
-    /// Performs a bitwise "and" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_and(&self, val: usize) -> usize {
         self.atomic.0.fetch_and(val, self.ordering)
     }
 
-    /// Bitwise "nand" with the current value.
-    ///
-    /// Performs a bitwise "nand" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_nand(&self, val: usize) -> usize {
         self.atomic.0.fetch_nand(val, self.ordering)
     }
 
-    /// Bitwise "or" with the current value.
-    ///
-    /// Performs a bitwise "or" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_or(&self, val: usize) -> usize {
         self.atomic.0.fetch_or(val, self.ordering)
     }
 
-    /// Bitwise "xor" with the current value.
-    ///
-    /// Performs a bitwise "xor" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_xor(&self, val: usize) -> usize {
         self.atomic.0.fetch_xor(val, self.ordering)
-    }
-
-    #[inline]
-    pub fn sequential_consistency(mut self) -> Self {
-        self.ordering = Ordering::SeqCst;
-        self
     }
 }
 
@@ -531,67 +473,36 @@ pub struct NeedsRmw<'a> {
 }
 
 impl NeedsRmw<'_> {
-    /// Stores a value into the atomic integer, returning the previous value.
     #[inline]
     pub fn swap(self, val: usize) -> usize {
         self.atomic.0.swap(val, self.ordering)
     }
 
-    /// Adds to the current value, returning the previous value.
-    ///
-    /// This operation wraps around on overflow.
     #[inline]
     pub fn fetch_add(&self, val: usize) -> usize {
         self.atomic.0.fetch_add(val, self.ordering)
     }
 
-    /// Subtracts from the current value, returning the previous value.
-    ///
-    /// This operation wraps around on overflow.
     #[inline]
     pub fn fetch_sub(&self, val: usize) -> usize {
         self.atomic.0.fetch_sub(val, self.ordering)
     }
 
-    /// Bitwise "and" with the current value.
-    ///
-    /// Performs a bitwise "and" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_and(&self, val: usize) -> usize {
         self.atomic.0.fetch_and(val, self.ordering)
     }
 
-    /// Bitwise "nand" with the current value.
-    ///
-    /// Performs a bitwise "nand" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_nand(&self, val: usize) -> usize {
         self.atomic.0.fetch_nand(val, self.ordering)
     }
 
-    /// Bitwise "or" with the current value.
-    ///
-    /// Performs a bitwise "or" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_or(&self, val: usize) -> usize {
         self.atomic.0.fetch_or(val, self.ordering)
     }
 
-    /// Bitwise "xor" with the current value.
-    ///
-    /// Performs a bitwise "xor" operation on the current value and the argument `value`, and
-    /// sets the new value to the result.
-    ///
-    /// Returns the previous value.
     #[inline]
     pub fn fetch_xor(&self, val: usize) -> usize {
         self.atomic.0.fetch_xor(val, self.ordering)
