@@ -37,10 +37,10 @@ impl AtomicUsize {
     /// Intended to be used with one of the operations that do a store (📥) in ‘method chaining’:
     /// [`store`], [`swap`], or one of the [`fetch_*`] methods.
     ///
-    /// FIXME: mention [`sequential_consistency`]
-    ///
     /// # Examples
     /// ```
+    /// use atomics_api::AtomicUsize;
+    ///
     /// let atomic = AtomicUsize::new(42);
     /// atomic.release().store(15);
     /// ```
@@ -49,7 +49,6 @@ impl AtomicUsize {
     /// [`store`]: AtomicUsize::store
     /// [`swap`]: AtomicUsize::swap
     /// [`fetch_*`]: AtomicUsize::fetch_add
-    /// [`sequential_consistency`]: NeedsStore::sequential_consistency
     #[must_use]
     #[inline]
     pub fn release(&self) -> NeedsStore {
@@ -68,10 +67,10 @@ impl AtomicUsize {
     /// Can also be combined with [`compare`] to always do an acquire, and conditionally do some
     /// other operations.
     ///
-    /// FIXME: mention [`sequential_consistency`]
-    ///
     /// # Examples
     /// ```
+    /// use atomics_api::AtomicUsize;
+    ///
     /// let atomic = AtomicUsize::new(42);
     /// let value = atomic.acquire().load();
     /// ```
@@ -81,7 +80,6 @@ impl AtomicUsize {
     /// [`swap`]: AtomicUsize::swap
     /// [`fetch_*`]: AtomicUsize::fetch_add
     /// [`compare`]: NeedsLoad::compare
-    /// [`sequential_consistency`]: NeedsLoad::sequential_consistency
     #[must_use]
     #[inline]
     pub fn acquire(&self) -> NeedsLoad {
@@ -99,6 +97,8 @@ impl AtomicUsize {
     ///
     /// # Examples
     /// ```
+    /// use atomics_api::AtomicUsize;
+    ///
     /// let atomic = AtomicUsize::new(42);
     /// let value = atomic.acquire_and_release().swap();
     /// ```
@@ -114,7 +114,7 @@ impl AtomicUsize {
         }
     }
 
-    /// 📤 📥 Compare the atomic integer to a value, and take some action if successful.
+    /// 📤 (📥?) Compare the atomic integer to a value, and take some action if successful.
     ///
     /// Every use of [`compare`] can be followed by multiple options, but must be always finish with
     /// [`swap`].
@@ -137,9 +137,6 @@ impl AtomicUsize {
     /// - Next you can supply release/acquire orderings, if you want to enforce any: [`acquire`],
     ///   [`release`], or [`acquire_and_release`].
     ///
-    /// - In vary rare cases you may want to combine [`acquire`] or [`release`] with
-    ///   [`sequential_consistency`].
-    ///
     /// - Finish with [`swap`], which stores a value into the atomic integer, returning the previous
     ///   value.
     ///
@@ -148,18 +145,35 @@ impl AtomicUsize {
     /// atomic.compare(current).acquire().swap(new);
     /// atomic.compare(current).release().swap(new);
     /// atomic.compare(current).acquire_and_release().swap(new);
-    /// atomic.compare(current).acquire().sequential_consistency().swap(new);
-    /// atomic.compare(current).release().sequential_consistency().swap(new);
     ///
     /// atomic.compare(current).weak().swap(new);
     /// atomic.compare(current).weak().acquire().swap(new);
     /// atomic.compare(current).weak().release().swap(new);
     /// atomic.compare(current).weak().acquire_and_release().swap(new);
-    /// atomic.compare(current).weak().acquire().sequential_consistency().swap(new);
-    /// atomic.compare(current).weak().release().sequential_consistency().swap(new);
     /// ```
     ///
     /// # Examples
+    /// Reimplementing `fetch_add` using a weak `compare`:
+    /// ```
+    /// use atomics_api::AtomicUsize;
+    ///
+    /// fn my_fetch_add(atomic: AtomicUsize, other: usize) {
+    ///     let mut old = atomic.load();
+    ///     loop {
+    ///         let new = old + 1;
+    ///         atomic.compare(old).weak().swap(new) {
+    ///             Ok(_) => break,
+    ///             Err(x) => old = x,
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// FIXME
+    /// No weak: lock-free singleton construction: https://devblogs.microsoft.com/oldnewthing/20180330-00/?p=98395
+    /// with weak: CAS-loop
+    /// with acquire: ??
+    /// with release: ??
     /// ```
     /// atomic.compare(current).swap(new);
     /// atomic.compare_and_swap(current, new);
@@ -180,7 +194,6 @@ impl AtomicUsize {
     /// [`acquire`]: compare::NeedsCompareOrdering::acquire
     /// [`release`]: compare::NeedsCompareOrdering::release
     /// [`acquire_and_release`]: compare::NeedsCompareOrdering::acquire_and_release
-    /// [`sequential_consistency`]: compare::NeedsCompareFinalizer::sequential_consistency
     #[must_use]
     #[inline]
     pub fn compare(&self, current: usize) -> NeedsCompareOrdering {
@@ -365,13 +378,6 @@ impl NeedsLoad<'_> {
         ))
     }
 
-    /// FIXME: add doc comment
-    #[inline]
-    pub fn sequential_consistency(mut self) -> Self {
-        self.ordering = Ordering::SeqCst;
-        self
-    }
-
     #[inline]
     pub fn load(self) -> usize {
         self.atomic.0.load(self.ordering)
@@ -419,13 +425,6 @@ pub struct NeedsStore<'a> {
 }
 
 impl NeedsStore<'_> {
-    /// FIXME: add doc comment
-    #[inline]
-    pub fn sequential_consistency(mut self) -> Self {
-        self.ordering = Ordering::SeqCst;
-        self
-    }
-
     #[inline]
     pub fn store(self, val: usize) {
         self.atomic.0.store(val, self.ordering)
@@ -517,7 +516,6 @@ mod tests {
     fn it_works() {
         let atomic = AtomicUsize::new(42);
         atomic.release().store(15);
-        atomic.release().sequential_consistency().store(15);
 
         atomic.compare(15);
     }

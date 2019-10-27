@@ -97,13 +97,6 @@ impl<'a> NeedsCompareOrdering<'a> {
 pub struct NeedsCompareFinalizer<'a>(CompareExchange<'a>);
 
 impl NeedsCompareFinalizer<'_> {
-    #[inline]
-    pub fn sequential_consistency(mut self) -> Self {
-        self.0.ordering_success = Ordering::SeqCst;
-        // TODO: figure out failure case
-        self
-    }
-
     /// Stores a value into the atomic integer if the current value is the same as the `current`
     /// value.
     ///
