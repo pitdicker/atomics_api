@@ -2,32 +2,11 @@ use core::sync::atomic::{self, Ordering};
 
 pub struct AtomicUsize(atomic::AtomicUsize);
 
-pub mod compare;
-use compare::{NeedsCompareOrdering, NeedsCompareAcqOp, CompareExchange};
-
 impl AtomicUsize {
     /// Creates a new atomic integer.
     #[inline]
     pub const fn new(val: usize) -> AtomicUsize {
         AtomicUsize(atomic::AtomicUsize::new(val))
-    }
-
-    /// Returns a mutable reference to the underlying integer.
-    ///
-    /// This is safe because the mutable reference guarantees that no other threads are
-    /// concurrently accessing the atomic data.
-    #[inline]
-    pub fn get_mut(&mut self) -> &mut usize {
-        self.0.get_mut()
-    }
-
-    /// Consumes the atomic and returns the contained value.
-    ///
-    /// This is safe because passing `self` by value guarantees that no other threads are
-    /// concurrently accessing the atomic data.
-    #[inline]
-    pub fn into_inner(self) -> usize {
-        self.0.into_inner()
     }
 
     /// Acquire data that is written by another thread. This is the second part of what needs to be
@@ -88,9 +67,9 @@ impl AtomicUsize {
     /// Intended to be used with one of the operations that do a store (📥) in ‘method chaining’:
     /// [`store`], [`swap`], or one of the [`fetch_*`] methods.
     ///
-    /// Can also be chained with an [`acquire`](NeedsStore::acquire) for the rare case where you
-    /// need to also acquire data written by other threads (typically when the atomic is used to
-    /// synchronize more than one location of regular data).
+    /// In rare cases can be chained with a [`NeedsStore::acquire`] when you not only need to
+    /// release data yourself, but also need to acquire data written by other threads (typically
+    /// when the atomic is used to synchronize more than one location of regular data).
     ///
     /// # Examples
     /// ```
@@ -130,8 +109,8 @@ impl AtomicUsize {
     ///   better performance on some platforms. If you already use [`compare`] in a loop, it is good
     ///   to use [`weak`].
     ///
-    /// - Next you can supply release/acquire orderings, if you want to enforce any: [`acquire`],
-    ///   [`release`], or [`acquire_and_release`].
+    /// - Next you can supply release/acquire orderings, if you want to enforce any: [`release`]
+    ///   and/or [`acquire`].
     ///
     /// - Finish with [`swap`], which stores a value into the atomic integer, returning the previous
     ///   value.
@@ -140,12 +119,12 @@ impl AtomicUsize {
     /// atomic.compare(current).swap(new);
     /// atomic.compare(current).acquire().swap(new);
     /// atomic.compare(current).release().swap(new);
-    /// atomic.compare(current).acquire_and_release().swap(new);
+    /// atomic.compare(current).release().acquire().swap(new);
     ///
     /// atomic.compare(current).weak().swap(new);
     /// atomic.compare(current).weak().acquire().swap(new);
     /// atomic.compare(current).weak().release().swap(new);
-    /// atomic.compare(current).weak().acquire_and_release().swap(new);
+    /// atomic.compare(current).weak().release().acquire().swap(new);
     /// ```
     ///
     /// # Examples
@@ -184,22 +163,22 @@ impl AtomicUsize {
     /// atomic.compare_exchange_weak(current, new, Ordering::Acquire, Ordering::Acquire);
     /// ```
     ///
-    /// [`swap`]: compare::NeedsCompareOrdering::swap
-    /// [`store`]: compare::NeedsCompareOrdering::store
-    /// [`weak`]: compare::NeedsCompareOrdering::weak
-    /// [`acquire`]: compare::NeedsCompareOrdering::acquire
-    /// [`release`]: compare::NeedsCompareOrdering::release
-    /// [`acquire_and_release`]: compare::NeedsCompareOrdering::acquire_and_release
+    /// [`compare`]: AtomicUsize::compare
+    /// [`swap`]: NeedsCompareOp::swap
+    /// [`store`]: NeedsCompareOp::store
+    /// [`weak`]: NeedsCompareOp::weak
+    /// [`acquire`]: NeedsCompareOp::acquire
+    /// [`release`]: NeedsCompareOp::release
     #[must_use]
     #[inline]
-    pub fn compare(&self, current: usize) -> NeedsCompareOrdering {
-        NeedsCompareOrdering(CompareExchange::new(
-            self,
+    pub fn compare(&self, current: usize) -> NeedsCompareOp {
+        NeedsCompareOp {
+            atomic: self,
             current,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            false,
-        ))
+            ordering_success: Ordering::Relaxed,
+            ordering_failure: Ordering::Relaxed,
+            weak: false,
+        }
     }
 
 
@@ -309,6 +288,29 @@ impl AtomicUsize {
     /// assert_eq!(foo.fetch_sub(10), 20);
     /// assert_eq!(foo.load(), 10);
     /// ```
+    /// ```
+    /// // Drop implementation similar to that of `std::sync::Arc`
+    /// pub struct MyArc<T: ?Sized> {
+    ///     ptr: NonNull<ArcInner<T>>,
+    ///     phantom: PhantomData<T>,
+    /// }
+    ///
+    /// struct ArcInner<T: ?Sized> {
+    ///     ref_count: atomic::AtomicUsize,
+    ///     data: T,
+    /// }
+    ///
+    /// unsafe impl<#[may_dangle] T: ?Sized> Drop for MyArc<T> {
+    ///     fn drop(&mut self) {
+    ///         let inner = self.ptr.as_ref();
+    ///         if inner.ref_count.fetch_sub(1) != 1 {
+    ///             return;
+    ///         }
+    ///         // We held the last reference, acquire the contents of this Arc and drop them.
+    ///         inner.data.drop()
+    ///     }
+    /// }
+    /// ```
     #[inline]
     pub fn fetch_sub(&self, val: usize) -> usize {
         self.0.fetch_sub(val, Ordering::Relaxed)
@@ -381,6 +383,24 @@ impl AtomicUsize {
     pub fn fetch_xor(&self, val: usize) -> usize {
         self.0.fetch_xor(val, Ordering::Relaxed)
     }
+
+    /// Returns a mutable reference to the underlying integer.
+    ///
+    /// This is safe because the mutable reference guarantees that no other threads are
+    /// concurrently accessing the atomic data.
+    #[inline]
+    pub fn get_mut(&mut self) -> &mut usize {
+        self.0.get_mut()
+    }
+
+    /// Consumes the atomic and returns the contained value.
+    ///
+    /// This is safe because passing `self` by value guarantees that no other threads are
+    /// concurrently accessing the atomic data.
+    #[inline]
+    pub fn into_inner(self) -> usize {
+        self.0.into_inner()
+    }
 }
 
 pub struct NeedsLoad<'a> {
@@ -390,14 +410,14 @@ pub struct NeedsLoad<'a> {
 impl NeedsLoad<'_> {
     /// FIXME: add doc comment
     #[inline]
-    pub fn compare(&self, current: usize) -> NeedsCompareAcqOp {
-        NeedsCompareAcqOp(CompareExchange::new(
-            self.atomic,
+    pub fn compare(&self, current: usize) -> NeedsCompareOp {
+        NeedsCompareOp {
+            atomic: self.atomic,
             current,
-            Ordering::Acquire,
-            Ordering::Relaxed,
-            false,
-        ))
+            ordering_success: Ordering::Acquire,
+            ordering_failure: Ordering::Acquire,
+            weak: false,
+        }
     }
 
     #[inline]
@@ -493,6 +513,74 @@ impl NeedsRmw<'_> {
     #[inline]
     pub fn store(self, val: usize) {
         let _ = self.atomic.0.swap(val, Ordering::AcqRel);
+    }
+}
+
+pub struct NeedsCompareOp<'a> {
+    atomic: &'a AtomicUsize,
+    current: usize,
+    ordering_success: Ordering,
+    ordering_failure: Ordering,
+    weak: bool,
+}
+
+impl<'a> NeedsCompareOp<'a> {
+    /// Stores a value into the atomic integer if the current value is the same as the `current`
+    /// value.
+    ///
+    /// The return value is always the previous value. If it is equal to `current`, then the value
+    /// was updated.
+    #[inline]
+    pub fn swap(&self, value: usize) -> Result<usize, usize> {
+        match self.weak {
+            false => self.atomic.0.compare_exchange(self.current,
+                                                    value,
+                                                    self.ordering_success,
+                                                    self.ordering_failure),
+            true => self.atomic.0.compare_exchange_weak(self.current,
+                                                        value,
+                                                        self.ordering_success,
+                                                        self.ordering_failure),
+        }
+    }
+
+    #[inline]
+    pub fn store(&self, value: usize) -> bool {
+        self.swap(value).is_ok()
+    }
+
+    /// Allow the compare-and-exchange to spuriously fail even when the comparison succeeds. This
+    /// will yield better performance on some platforms.
+    ///
+    /// When to prefer `weak`? If you would have to introduce a loop only because of spurious
+    /// failure, don't use it. But if you have a loop anyway, `weak` is the better choice.
+    #[must_use]
+    #[inline]
+    pub fn weak(mut self) -> Self {
+        self.weak = true;
+        self
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn acquire(mut self) -> Self {
+        if self.ordering_success == Ordering::Release {
+            self.ordering_success = Ordering::AcqRel;
+        } else {
+            self.ordering_success = Ordering::Acquire;
+        }
+        self
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn release(mut self) -> Self {
+        if self.ordering_success == Ordering::Acquire {
+            self.ordering_success = Ordering::AcqRel;
+        } else {
+            self.ordering_success = Ordering::Release;
+        }
+        self
     }
 }
 
