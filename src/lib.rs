@@ -1,4 +1,4 @@
-use core::sync::atomic::{self, Ordering};
+use core::sync::atomic::{self, fence, Ordering};
 
 pub struct AtomicUsize(atomic::AtomicUsize);
 
@@ -191,7 +191,7 @@ impl AtomicUsize {
     /// [`release`]: AtomicUsize::release
     #[must_use]
     #[inline]
-    pub fn keep_after(&self) -> NeedsStore {
+    pub fn stay_after(&self) -> NeedsStore {
         NeedsStore { atomic: self }
     }
 
@@ -204,7 +204,7 @@ impl AtomicUsize {
     /// [`acquire`]: AtomicUsize::acquire
     #[must_use]
     #[inline]
-    pub fn keep_before(&self) -> NeedsLoad {
+    pub fn stay_before(&self) -> NeedsLoad {
         NeedsLoad { atomic: self }
     }
 
@@ -446,7 +446,7 @@ impl NeedsStore<'_> {
     /// Not only Release data that is written by this thread to another thread, but at the same time
     /// Acquire data that is written by another thread.
     ///
-    /// This method is generally used only in rare cases, where an atomic is not used to synchronise
+    /// This method is generally used only in rare cases, where an atomic is not used to synchronize
     /// just one location of regular data, but multiple independend locations.
     ///
     /// Intended to be used with one of the operations that do both a load and a store (📤 📥) in
@@ -583,6 +583,27 @@ impl<'a> NeedsCompareOp<'a> {
         self
     }
 }
+
+/// Do an acquire operations without doing a load on an atomic.
+///
+/// Note: this uses the atomic that this thread last performed a load on the know with which other
+/// threads to synchronize data.
+///
+/// Prevents all following memory operations from being reordered before the *last read*.
+pub fn acquire_using_last_load() {
+    fence(Ordering::Acquire)
+}
+
+/// Do a release operations without doing a store on an atomic.
+///
+/// Note: this uses the atomic on which this thread is going to perform a load next to the know with
+/// which other threads to synchronize data.
+///
+/// Prevents all preceding memory operations from being reordered past *subsequent writes*.
+pub fn release_using_next_store() {
+    fence(Ordering::Release)
+}
+
 
 #[cfg(test)]
 mod tests {
