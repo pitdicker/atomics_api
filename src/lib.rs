@@ -30,12 +30,67 @@ impl AtomicUsize {
         self.0.into_inner()
     }
 
+    /// Acquire data that is written by another thread. This is the second part of what needs to be
+    /// a release/acquire pair on this atomic, where the sending thread must use [`release`].
+    ///
+    /// Intended to be used with one of the operations that do a load (📤) in ‘method chaining’:
+    /// [`load`], [`swap`], or one of the [`fetch_*`] methods.
+    ///
+    /// Can also be combined with [`compare`] to always do an acquire, and conditionally do some
+    /// other operations.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::cell::UnsafeCell;
+    /// use atomics_api::AtomicUsize;
+    ///
+    /// const NOT_IN_USE: usize = 0;
+    /// const WRITING: usize = 1;
+    /// let guard = AtomicUsize::new(NOT_IN_USE);
+    /// let data = UnsafeCell::new(0i32);
+    ///
+    /// if NOT_IN_USE == guard.acquire().swap(WRITING) {
+    ///     // No others are reading or writing to the data protected by guard (`NOT_IN_USE`).
+    ///     // We have acquired the latest state of the data.
+    ///     unsafe {
+    ///         let val = data.get();
+    ///         *val = *val+ 1; // My complex use of the data
+    ///     }
+    ///
+    ///     // Done, release our changes
+    ///     guard.release().store(NOT_IN_USE);
+    /// }
+    ///
+    /// // Cleanup when there are no other threads using `data` anymore:
+    /// if NOT_IN_USE == guard.acquire().load() {
+    ///     unsafe {
+    ///         let val = data.get();
+    ///         *val = 0;
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// [`release`]: AtomicUsize::release
+    /// [`load`]: AtomicUsize::load
+    /// [`swap`]: AtomicUsize::swap
+    /// [`fetch_*`]: AtomicUsize::fetch_add
+    /// [`compare`]: NeedsLoad::compare
+    #[must_use]
+    #[inline]
+    pub fn acquire(&self) -> NeedsLoad {
+        NeedsLoad { atomic: self }
+    }
+
     /// Release data that is written by this thread to another thread. This is the first part of
     /// what needs to be a release/acquire pair on this atomic, where the receiving thread must use
     /// [`acquire`].
     ///
     /// Intended to be used with one of the operations that do a store (📥) in ‘method chaining’:
     /// [`store`], [`swap`], or one of the [`fetch_*`] methods.
+    ///
+    /// Can also be chained with an [`acquire`](NeedsStore::acquire) for the rare case where you
+    /// need to also acquire data written by other threads (typically when the atomic is used to
+    /// synchronize more than one location of regular data).
     ///
     /// # Examples
     /// ```
@@ -52,66 +107,7 @@ impl AtomicUsize {
     #[must_use]
     #[inline]
     pub fn release(&self) -> NeedsStore {
-        NeedsStore {
-            atomic: self,
-            ordering: Ordering::Release,
-        }
-    }
-
-    /// Acquire data that is written by another thread. This is the second part of what needs to be
-    /// a release/acquire pair on this atomic, where the sending thread must use [`release`].
-    ///
-    /// Intended to be used with one of the operations that do a load (📤) in ‘method chaining’:
-    /// [`load`], [`swap`], or one of the [`fetch_*`] methods.
-    ///
-    /// Can also be combined with [`compare`] to always do an acquire, and conditionally do some
-    /// other operations.
-    ///
-    /// # Examples
-    /// ```
-    /// use atomics_api::AtomicUsize;
-    ///
-    /// let atomic = AtomicUsize::new(42);
-    /// let value = atomic.acquire().load();
-    /// ```
-    ///
-    /// [`release`]: AtomicUsize::release
-    /// [`load`]: AtomicUsize::load
-    /// [`swap`]: AtomicUsize::swap
-    /// [`fetch_*`]: AtomicUsize::fetch_add
-    /// [`compare`]: NeedsLoad::compare
-    #[must_use]
-    #[inline]
-    pub fn acquire(&self) -> NeedsLoad {
-        NeedsLoad {
-            atomic: self,
-            ordering: Ordering::Acquire,
-        }
-    }
-
-    /// Acquire data that is written by another thread, and release data written by this thread to
-    /// others.
-    ///
-    /// Intended to be used with one of the operations that do both a load and a store (📤 📥) in
-    /// ‘method chaining’: [`swap`] or one of the [`fetch_*`] methods.
-    ///
-    /// # Examples
-    /// ```
-    /// use atomics_api::AtomicUsize;
-    ///
-    /// let atomic = AtomicUsize::new(42);
-    /// let value = atomic.acquire_and_release().swap();
-    /// ```
-    ///
-    /// [`swap`]: AtomicUsize::swap
-    /// [`fetch_*`]: AtomicUsize::fetch_add
-    #[must_use]
-    #[inline]
-    pub fn acquire_and_release(&self) -> NeedsRmw {
-        NeedsRmw {
-            atomic: self,
-            ordering: Ordering::AcqRel,
-        }
+        NeedsStore { atomic: self }
     }
 
     /// 📤 (📥?) Compare the atomic integer to a value, and take some action if successful.
@@ -154,7 +150,7 @@ impl AtomicUsize {
     ///
     /// # Examples
     /// Reimplementing `fetch_add` using a weak `compare`:
-    /// ```
+    /// ```text
     /// use atomics_api::AtomicUsize;
     ///
     /// fn my_fetch_add(atomic: AtomicUsize, other: usize) {
@@ -174,7 +170,7 @@ impl AtomicUsize {
     /// with weak: CAS-loop
     /// with acquire: ??
     /// with release: ??
-    /// ```
+    /// ```text
     /// atomic.compare(current).swap(new);
     /// atomic.compare_and_swap(current, new);
     /// // Equals std_atomic.compare_and_swap(current, new, Ordering::Release);
@@ -204,6 +200,33 @@ impl AtomicUsize {
             Ordering::Relaxed,
             false,
         ))
+    }
+
+
+    /// Make sure this operation will not be reordered, but remains after all previous loads and
+    /// stores to other atomics (and to regular data).
+    ///
+    /// This does exactly the same thing as [`release`]. It can be used to make the code
+    /// self-document the guarantees it relies on.
+    ///
+    /// [`release`]: AtomicUsize::release
+    #[must_use]
+    #[inline]
+    pub fn keep_after(&self) -> NeedsStore {
+        NeedsStore { atomic: self }
+    }
+
+    /// Make sure this operation will not be reordered, but remains before all following loads and
+    /// stores to other atomics (and to regular data).
+    ///
+    /// This does exactly the same thing as [`acquire`]. It can be used to make the code
+    /// self-document the guarantees it relies on.
+    ///
+    /// [`acquire`]: AtomicUsize::acquire
+    #[must_use]
+    #[inline]
+    pub fn keep_before(&self) -> NeedsLoad {
+        NeedsLoad { atomic: self }
     }
 
     /// 📤 Loads a value from the atomic integer.
@@ -361,8 +384,7 @@ impl AtomicUsize {
 }
 
 pub struct NeedsLoad<'a> {
-    atomic: &'a AtomicUsize,
-    ordering: Ordering,
+    atomic: &'a AtomicUsize
 }
 
 impl NeedsLoad<'_> {
@@ -372,139 +394,105 @@ impl NeedsLoad<'_> {
         NeedsCompareAcqOp(CompareExchange::new(
             self.atomic,
             current,
-            self.ordering,
-            self.ordering,
+            Ordering::Acquire,
+            Ordering::Relaxed,
             false,
         ))
     }
 
     #[inline]
-    pub fn load(self) -> usize {
-        self.atomic.0.load(self.ordering)
-    }
-
+    pub fn load(self) -> usize { self.atomic.0.load(Ordering::Acquire) }
     #[inline]
-    pub fn swap(self, val: usize) -> usize {
-        self.atomic.0.swap(val, self.ordering)
-    }
-
+    pub fn swap(self, val: usize) -> usize { self.atomic.0.swap(val, Ordering::Acquire) }
     #[inline]
-    pub fn fetch_add(&self, val: usize) -> usize {
-        self.atomic.0.fetch_add(val, self.ordering)
-    }
-
+    pub fn fetch_add(&self, val: usize) -> usize { self.atomic.0.fetch_add(val, Ordering::Acquire) }
     #[inline]
-    pub fn fetch_sub(&self, val: usize) -> usize {
-        self.atomic.0.fetch_sub(val, self.ordering)
-    }
-
+    pub fn fetch_sub(&self, val: usize) -> usize { self.atomic.0.fetch_sub(val, Ordering::Acquire) }
     #[inline]
-    pub fn fetch_and(&self, val: usize) -> usize {
-        self.atomic.0.fetch_and(val, self.ordering)
-    }
-
+    pub fn fetch_and(&self, val: usize) -> usize { self.atomic.0.fetch_and(val, Ordering::Acquire) }
     #[inline]
-    pub fn fetch_nand(&self, val: usize) -> usize {
-        self.atomic.0.fetch_nand(val, self.ordering)
-    }
-
+    pub fn fetch_nand(&self, val: usize) -> usize { self.atomic.0.fetch_nand(val, Ordering::Acquire) }
     #[inline]
-    pub fn fetch_or(&self, val: usize) -> usize {
-        self.atomic.0.fetch_or(val, self.ordering)
-    }
-
+    pub fn fetch_or(&self, val: usize) -> usize { self.atomic.0.fetch_or(val, Ordering::Acquire) }
     #[inline]
-    pub fn fetch_xor(&self, val: usize) -> usize {
-        self.atomic.0.fetch_xor(val, self.ordering)
-    }
+    pub fn fetch_xor(&self, val: usize) -> usize { self.atomic.0.fetch_xor(val, Ordering::Acquire) }
 }
 
 pub struct NeedsStore<'a> {
-    atomic: &'a AtomicUsize,
-    ordering: Ordering,
+    atomic: &'a AtomicUsize
 }
 
 impl NeedsStore<'_> {
+    /// Not only Release data that is written by this thread to another thread, but at the same time
+    /// Acquire data that is written by another thread.
+    ///
+    /// This method is generally used only in rare cases, where an atomic is not used to synchronise
+    /// just one location of regular data, but multiple independend locations.
+    ///
+    /// Intended to be used with one of the operations that do both a load and a store (📤 📥) in
+    /// ‘method chaining’: [`swap`] or one of the [`fetch_*`] methods.
+    ///
+    /// # Examples
+    /// ```
+    /// use atomics_api::AtomicUsize;
+    ///
+    /// let atomic = AtomicUsize::new(42);
+    /// let value = atomic.release().acquire().swap(41);
+    /// ```
+    ///
+    /// [`swap`]: AtomicUsize::swap
+    /// [`fetch_*`]: AtomicUsize::fetch_add
+    #[must_use]
     #[inline]
-    pub fn store(self, val: usize) {
-        self.atomic.0.store(val, self.ordering)
+    pub fn acquire(&self) -> NeedsRmw {
+        NeedsRmw { atomic: self.atomic }
     }
 
     #[inline]
-    pub fn swap(self, val: usize) -> usize {
-        self.atomic.0.swap(val, self.ordering)
-    }
-
+    pub fn store(self, val: usize) { self.atomic.0.store(val, Ordering::Release) }
     #[inline]
-    pub fn fetch_add(&self, val: usize) -> usize {
-        self.atomic.0.fetch_add(val, self.ordering)
-    }
-
+    pub fn swap(self, val: usize) -> usize { self.atomic.0.swap(val, Ordering::Release) }
     #[inline]
-    pub fn fetch_sub(&self, val: usize) -> usize {
-        self.atomic.0.fetch_sub(val, self.ordering)
-    }
-
+    pub fn fetch_add(&self, val: usize) -> usize { self.atomic.0.fetch_add(val, Ordering::Release) }
     #[inline]
-    pub fn fetch_and(&self, val: usize) -> usize {
-        self.atomic.0.fetch_and(val, self.ordering)
-    }
-
+    pub fn fetch_sub(&self, val: usize) -> usize { self.atomic.0.fetch_sub(val, Ordering::Release) }
     #[inline]
-    pub fn fetch_nand(&self, val: usize) -> usize {
-        self.atomic.0.fetch_nand(val, self.ordering)
-    }
-
+    pub fn fetch_and(&self, val: usize) -> usize { self.atomic.0.fetch_and(val, Ordering::Release) }
     #[inline]
-    pub fn fetch_or(&self, val: usize) -> usize {
-        self.atomic.0.fetch_or(val, self.ordering)
-    }
-
+    pub fn fetch_nand(&self, val: usize) -> usize { self.atomic.0.fetch_nand(val, Ordering::Release) }
     #[inline]
-    pub fn fetch_xor(&self, val: usize) -> usize {
-        self.atomic.0.fetch_xor(val, self.ordering)
-    }
+    pub fn fetch_or(&self, val: usize) -> usize { self.atomic.0.fetch_or(val, Ordering::Release) }
+    #[inline]
+    pub fn fetch_xor(&self, val: usize) -> usize { self.atomic.0.fetch_xor(val, Ordering::Release) }
 }
 
 pub struct NeedsRmw<'a> {
     atomic: &'a AtomicUsize,
-    ordering: Ordering,
 }
 
 impl NeedsRmw<'_> {
     #[inline]
-    pub fn swap(self, val: usize) -> usize {
-        self.atomic.0.swap(val, self.ordering)
-    }
-
+    pub fn swap(self, val: usize) -> usize { self.atomic.0.swap(val, Ordering::AcqRel) }
     #[inline]
-    pub fn fetch_add(&self, val: usize) -> usize {
-        self.atomic.0.fetch_add(val, self.ordering)
-    }
-
+    pub fn fetch_add(&self, val: usize) -> usize { self.atomic.0.fetch_add(val, Ordering::AcqRel) }
     #[inline]
-    pub fn fetch_sub(&self, val: usize) -> usize {
-        self.atomic.0.fetch_sub(val, self.ordering)
-    }
-
+    pub fn fetch_sub(&self, val: usize) -> usize { self.atomic.0.fetch_sub(val, Ordering::AcqRel) }
     #[inline]
-    pub fn fetch_and(&self, val: usize) -> usize {
-        self.atomic.0.fetch_and(val, self.ordering)
-    }
-
+    pub fn fetch_and(&self, val: usize) -> usize { self.atomic.0.fetch_and(val, Ordering::AcqRel) }
     #[inline]
-    pub fn fetch_nand(&self, val: usize) -> usize {
-        self.atomic.0.fetch_nand(val, self.ordering)
-    }
-
+    pub fn fetch_nand(&self, val: usize) -> usize { self.atomic.0.fetch_nand(val, Ordering::AcqRel) }
     #[inline]
-    pub fn fetch_or(&self, val: usize) -> usize {
-        self.atomic.0.fetch_or(val, self.ordering)
-    }
-
+    pub fn fetch_or(&self, val: usize) -> usize { self.atomic.0.fetch_or(val, Ordering::AcqRel) }
     #[inline]
-    pub fn fetch_xor(&self, val: usize) -> usize {
-        self.atomic.0.fetch_xor(val, self.ordering)
+    pub fn fetch_xor(&self, val: usize) -> usize { self.atomic.0.fetch_xor(val, Ordering::AcqRel) }
+
+    /// Synchronizations that need a read-modify-write operation don't work with just a store.
+    /// This method emulates a store by using [`swap`] and ignoring the result.
+    ///
+    /// [`swap`]: NeedsRmw::swap
+    #[inline]
+    pub fn store(self, val: usize) {
+        let _ = self.atomic.0.swap(val, Ordering::AcqRel);
     }
 }
 
