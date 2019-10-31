@@ -181,6 +181,21 @@ impl AtomicUsize {
         }
     }
 
+    /// Retricted method to acquire data that is written by another thread.
+    ///
+    /// While `acquire` can always be used to acquire data released by another thread, `consume` can
+    /// only do so if there is a data dependency on the value of the atomic.
+    ///
+    /// In other words: without reading the atomic it must be impossible for this thread to know
+    /// where the data lives that has to be synchronized. Typically the atomic will hold the value
+    /// of a pointer, or something like an array index.
+    ///
+    /// Don't try to somehow make fake dependencies, that the optimizer or processor may eliminate.
+    #[must_use]
+    #[inline]
+    pub fn consume(&self) -> NeedsLoad {
+        unimplemented!()
+    }
 
     /// Make sure this operation will not be reordered, but remains after all previous loads and
     /// stores to other atomics (and to regular data).
